@@ -1,0 +1,11 @@
+# MongoDB and Redis are no longer needed.
+# Firebase services (Firestore, Storage, Auth) are used instead.
+#
+# For local development with Firebase emulators:
+#   firebase emulators:start
+#
+# See: https://firebase.google.com/docs/emulator-suite
+
+version: '3.8'
+
+services: {}

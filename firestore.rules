@@ -1,0 +1,21 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users can only read/write their own profile
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Interviews: authenticated users can create; can read/update their own
+    match /interviews/{interviewId} {
+      allow create: if request.auth != null;
+      allow read, update: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+
+    // Questions: any authenticated user can read
+    match /questions/{questionId} {
+      allow read: if request.auth != null;
+    }
+  }
+}

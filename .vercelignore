@@ -1,0 +1,6 @@
+backend/
+docker-compose.yml
+*.rules
+.firebaserc
+firebase.json
+DEPLOY.md

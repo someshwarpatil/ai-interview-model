@@ -1,0 +1,17 @@
+# Root-level .dockerignore — applied when building from repo root
+# (docker build -f backend/Dockerfile .)
+
+**/node_modules
+**/.next
+**/dist
+**/uploads
+**/*.log
+**/.env
+**/.env.*
+!backend/.env.production.example
+!frontend/.env.production.example
+.git
+.DS_Store
+DEPLOY.md
+README.md
+docker-compose.yml
