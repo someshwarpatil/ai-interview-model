@@ -29,14 +29,12 @@ class FirebaseStorageService implements IStorageService {
     const filePath = filename.startsWith(this.basePath)
       ? filename
       : `${this.basePath}/${filename}`;
-    const fileRef = storageBucket().file(filePath);
+    const bucket = storageBucket();
+    const bucketName = bucket.name;
 
-    const [signedUrl] = await fileRef.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
-
-    return signedUrl;
+    // Use the GCS public URL format (avoids signBlob permission on Cloud Run)
+    // The file is accessed server-side via the Admin SDK, not by end users
+    return `https://storage.googleapis.com/${bucketName}/${filePath}`;
   }
 
   getFilePath(filename: string): string {

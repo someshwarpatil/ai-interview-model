@@ -15,10 +15,21 @@ export const createApp = (): Application => {
   // Security middleware
   app.use(helmet());
 
-  // CORS
+  // CORS — supports comma-separated FRONTEND_URL and all *.vercel.app previews
+  const allowedOrigins = config.cors.origin.split(',').map((o) => o.trim());
   app.use(
     cors({
-      origin: config.cors.origin,
+      origin: (origin, callback) => {
+        // Allow requests with no origin (curl, server-to-server)
+        if (!origin) return callback(null, true);
+        if (
+          allowedOrigins.includes(origin) ||
+          origin.endsWith('.vercel.app')
+        ) {
+          return callback(null, true);
+        }
+        callback(new Error('Not allowed by CORS'));
+      },
       credentials: true,
     })
   );
