@@ -1,199 +1,226 @@
-# Deployment Guide — Firebase + Google Cloud Run
+# Deployment Guide — Vercel + Cloud Run + Firebase
 
 ## Architecture
 
 ```
 Browser
-  ├── Pages / static assets  →  Firebase Hosting  (Next.js)
-  └── API calls              →  Google Cloud Run   (Express + BullMQ Worker)
-                                    ├── MongoDB Atlas  (free M0)
-                                    └── Upstash Redis  (free tier)
+  ├── Pages / static assets  →  Vercel          (Next.js frontend)
+  └── API calls              →  Google Cloud Run (Express backend, asia-south1)
+                                    ├── Firestore      (database)
+                                    ├── Firebase Storage (video files)
+                                    └── Firebase Auth   (user authentication)
 ```
 
 ---
 
-## Step 0 — One-time account setup
+## Prerequisites
 
-You need accounts on all four services (all have free tiers):
+| Tool | Install |
+|------|---------|
+| Node.js 20+ | [nodejs.org](https://nodejs.org) |
+| gcloud CLI | `brew install google-cloud-sdk` |
+| Vercel CLI | `npm i -g vercel` |
+| Firebase project | [console.firebase.google.com](https://console.firebase.google.com) |
 
-| Service | Signup | What you get |
-|---------|--------|--------------|
-| [Firebase](https://console.firebase.google.com) | Google account | Hosting + project |
-| [Google Cloud](https://console.cloud.google.com) | Google account (same) | Cloud Run |
-| [MongoDB Atlas](https://cloud.mongodb.com) | Email | Free M0 cluster (512 MB) |
-| [Upstash](https://console.upstash.com) | Email / GitHub | Free Redis (10k req/day) |
-
-Install tools:
 ```bash
-# Firebase CLI
-npm install -g firebase-tools
-firebase login
-
-# Google Cloud SDK
-brew install google-cloud-sdk
+# Authenticate
 gcloud auth login
-gcloud auth configure-docker   # enables pushing to gcr.io
+vercel login
 ```
 
 ---
 
-## Step 1 — MongoDB Atlas
+## Step 1 — Firebase Setup
 
-1. Create a free **M0** cluster (any region)
-2. In **Database Access** → add a user with password
-3. In **Network Access** → add `0.0.0.0/0` (allow all IPs for Cloud Run)
-4. Click **Connect → Drivers** → copy the connection string:
-   ```
-   mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/ai_interview
-   ```
+1. Create a Firebase project (or use an existing one)
+2. Enable **Firestore**, **Storage**, and **Authentication** (Email/Password) in the Firebase Console
+3. Note your project ID (e.g. `spfinance-66f81`)
 
 ---
 
-## Step 2 — Upstash Redis
+## Step 2 — Create GCP Secrets
 
-1. Create a new database (any region, free tier)
-2. Copy the **Redis URL** from the database page — it looks like:
-   ```
-   rediss://default:AxxxxxxxxxxxxxxA@fancy-name.upstash.io:6379
-   ```
-
----
-
-## Step 3 — Firebase project
+Store API keys securely in Secret Manager:
 
 ```bash
-# Create a new project (or use an existing one)
-firebase projects:create your-project-id
+gcloud config set project YOUR_PROJECT_ID
 
-# Set as default for this repo
-firebase use your-project-id
+# Enable required APIs
+gcloud services enable \
+  run.googleapis.com \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
+  secretmanager.googleapis.com
 
-# Enable the Web Frameworks experiment (needed for Next.js hosting)
-firebase experiments:enable webframeworks
-```
+# Create secrets
+echo -n "your-gemini-api-key" | gcloud secrets create GEMINI_API_KEY --data-file=-
+echo -n "gemini" | gcloud secrets create AI_PROVIDER --data-file=-
 
-Update `.firebaserc` with your project ID:
-```json
-{ "projects": { "default": "your-project-id" } }
+# Grant Cloud Run access to secrets
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+# Grant Storage + token signing access
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountTokenCreator"
 ```
 
 ---
 
-## Step 4 — Deploy backend to Cloud Run
+## Step 3 — Deploy Backend to Cloud Run
+
+From the repo root:
 
 ```bash
-# Set your GCP project
-export PROJECT_ID=your-project-id
-gcloud config set project $PROJECT_ID
-
-# Build the Docker image (run from the repo root)
-docker build -f backend/Dockerfile \
-  -t gcr.io/$PROJECT_ID/ai-interview-backend .
-
-# Push to Google Container Registry
-docker push gcr.io/$PROJECT_ID/ai-interview-backend
-
-# Deploy to Cloud Run
-gcloud run deploy ai-interview-backend \
-  --image gcr.io/$PROJECT_ID/ai-interview-backend \
-  --region us-central1 \
-  --platform managed \
-  --allow-unauthenticated \
-  --port 8080 \
-  --memory 1Gi \
-  --set-env-vars "\
-NODE_ENV=production,\
-MONGODB_URI=<your-atlas-uri>,\
-REDIS_URL=<your-upstash-url>,\
-UPLOAD_DIR=/tmp/uploads,\
-MAX_VIDEO_SIZE_MB=50,\
-MOCK_MODE=true,\
-FRONTEND_URL=https://$PROJECT_ID.web.app"
+./backend/deploy.sh
 ```
 
-After deploy, note the **Service URL** shown at the end (e.g. `https://ai-interview-backend-xxxxxx-uc.a.run.app`).
+This script:
+- Builds the Docker image via Cloud Build (no local Docker needed)
+- Deploys to Cloud Run (asia-south1) with 1 vCPU, 1GB RAM, 5 min timeout
+- Configures env vars and secrets automatically
+- Outputs the service URL
 
-Verify it works:
+**Service URL example:** `https://ai-interview-backend-903366950647.asia-south1.run.app`
+
+Verify:
 ```bash
-curl https://ai-interview-backend-xxxxxx-uc.a.run.app/health
+curl https://YOUR_CLOUD_RUN_URL/health
 # → {"status":"ok","timestamp":"..."}
 ```
 
----
-
-## Step 5 — Configure frontend with backend URL
-
-```bash
-echo "NEXT_PUBLIC_API_URL=https://ai-interview-backend-xxxxxx-uc.a.run.app" \
-  > frontend/.env.production
-```
-
----
-
-## Step 6 — Deploy frontend to Firebase Hosting
-
-```bash
-firebase deploy --only hosting
-```
-
-Firebase CLI will detect Next.js, build the app, and deploy.
-
-Your app is live at:
-- `https://your-project-id.web.app`
-- `https://your-project-id.firebaseapp.com`
-
----
-
-## Updating after code changes
-
-**Backend changes:**
-```bash
-docker build -f backend/Dockerfile -t gcr.io/$PROJECT_ID/ai-interview-backend . \
-  && docker push gcr.io/$PROJECT_ID/ai-interview-backend \
-  && gcloud run deploy ai-interview-backend \
-       --image gcr.io/$PROJECT_ID/ai-interview-backend \
-       --region us-central1
-```
-
-**Frontend changes:**
-```bash
-firebase deploy --only hosting
-```
-
----
-
-## Switching off mock mode (when OpenAI quota is restored)
+### Update CORS after deploy
 
 ```bash
 gcloud run services update ai-interview-backend \
-  --region us-central1 \
-  --update-env-vars "MOCK_MODE=false,OPENAI_API_KEY=sk-..."
+  --region=asia-south1 \
+  --update-env-vars="FRONTEND_URL=https://your-app.vercel.app"
 ```
+
+> Note: The backend also allows all `*.vercel.app` origins automatically.
 
 ---
 
-## Viewing logs
+## Step 4 — Deploy Frontend to Vercel
+
+### First time setup
+
+1. Go to [vercel.com](https://vercel.com) → Import your GitHub repo
+2. Set **Root Directory** to `frontend`
+3. Add environment variables in Vercel Dashboard (Settings > Environment Variables):
+
+| Variable | Value |
+|----------|-------|
+| `NEXT_PUBLIC_API_URL` | `https://YOUR_CLOUD_RUN_URL` |
+| `NEXT_PUBLIC_FIREBASE_API_KEY` | From Firebase Console |
+| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | `your-project.firebaseapp.com` |
+| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | Your project ID |
+| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | `your-project.firebasestorage.app` |
+| `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | From Firebase Console |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` | From Firebase Console |
+
+### Deploy
 
 ```bash
-# Backend (Cloud Run) logs
-gcloud run services logs read ai-interview-backend --region us-central1 --limit 50
+vercel --prod
+```
 
-# Or in real-time
-gcloud beta run services logs tail ai-interview-backend --region us-central1
+Or push to `main` — Vercel auto-deploys from GitHub.
+
+---
+
+## Updating After Code Changes
+
+**Backend:**
+```bash
+./backend/deploy.sh
+```
+
+**Frontend:**
+```bash
+vercel --prod
+# Or just push to main (auto-deploy)
+```
+
+**Both:**
+```bash
+./backend/deploy.sh && vercel --prod
 ```
 
 ---
 
-## Environment variable reference
+## Switching AI Provider
+
+```bash
+# Update the secret
+echo -n "claude" | gcloud secrets versions add AI_PROVIDER --data-file=-
+echo -n "your-claude-key" | gcloud secrets create CLAUDE_API_KEY --data-file=-
+
+# Redeploy with the new secret
+gcloud run services update ai-interview-backend \
+  --region=asia-south1 \
+  --update-secrets="CLAUDE_API_KEY=CLAUDE_API_KEY:latest"
+```
+
+---
+
+## Toggling Mock Mode
+
+```bash
+gcloud run services update ai-interview-backend \
+  --region=asia-south1 \
+  --update-env-vars="MOCK_MODE=true"
+```
+
+Set to `false` to use real AI evaluation.
+
+---
+
+## Viewing Logs
+
+```bash
+# Cloud Run logs
+gcloud run services logs read ai-interview-backend --region=asia-south1 --limit=50
+
+# Real-time tail
+gcloud beta run services logs tail ai-interview-backend --region=asia-south1
+```
+
+---
+
+## Environment Variable Reference
+
+### Backend (Cloud Run)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NODE_ENV` | Yes | Set to `production` |
-| `PORT` | Yes | `8080` (Cloud Run default) |
-| `MONGODB_URI` | Yes | MongoDB Atlas connection string |
-| `REDIS_URL` | Yes | Upstash Redis URL (`rediss://...`) |
-| `UPLOAD_DIR` | Yes | `/tmp/uploads` for Cloud Run |
-| `FRONTEND_URL` | Yes | Firebase Hosting URL (for CORS) |
-| `MOCK_MODE` | Yes | `true` for demo, `false` for real AI |
-| `OPENAI_API_KEY` | If `MOCK_MODE=false` | Your OpenAI API key |
+| `NODE_ENV` | Yes | `production` |
+| `PORT` | Auto | `8080` (set by Cloud Run) |
+| `FIREBASE_PROJECT_ID` | Yes | Firebase project ID |
+| `FIREBASE_STORAGE_BUCKET` | Yes | `project-id.appspot.com` |
+| `AI_PROVIDER` | Yes | `gemini`, `claude`, or `openai` (via Secret Manager) |
+| `GEMINI_API_KEY` | If gemini | Gemini API key (via Secret Manager) |
+| `CLAUDE_API_KEY` | If claude | Claude API key (via Secret Manager) |
+| `OPENAI_API_KEY` | If openai | OpenAI API key (via Secret Manager) |
+| `FRONTEND_URL` | Yes | Vercel frontend URL (for CORS) |
+| `MOCK_MODE` | No | `true` to bypass AI calls |
 | `MAX_VIDEO_SIZE_MB` | No | Default: `50` |
+
+### Frontend (Vercel)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXT_PUBLIC_API_URL` | Yes | Cloud Run backend URL |
+| `NEXT_PUBLIC_MAX_RECORDING_SECONDS` | No | Default: `90` |
+| `NEXT_PUBLIC_FIREBASE_API_KEY` | Yes | Firebase client API key |
+| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | Yes | Firebase auth domain |
+| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | Yes | Firebase project ID |
+| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | Yes | Firebase storage bucket |
+| `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | Yes | Firebase sender ID |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` | Yes | Firebase app ID |

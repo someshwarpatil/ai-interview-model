@@ -77,18 +77,18 @@ Express + TypeScript backend for AI-powered interview evaluation. Supports multi
 
 ## API Endpoints
 
-All routes are prefixed with `/api/interview` and require a Firebase ID token in the `Authorization: Bearer <token>` header.
+All routes require a Firebase ID token in the `Authorization: Bearer <token>` header unless noted.
 
 ### `POST /api/interview`
 
-Create a new interview session with video upload.
+Create a new interview session with video upload. In mock mode, accepts JSON without video.
 
 **Request:** `multipart/form-data`
 | Field | Type | Description |
 |-------|------|-------------|
 | `video` | File | Video recording (mp4, webm, ogg, mov) |
 | `role` | string | Job role (e.g. "Software Engineer") |
-| `interviewType` | string | Type: `technical`, `behavioral`, `system_design` |
+| `interviewType` | string | Type: Technical, Behavioral, Case Study |
 
 **Response:** `201`
 
@@ -127,14 +127,46 @@ Get interview session status and results.
 }
 ```
 
-### `GET /health`
+### `POST /api/analyze`
 
-Health check (no auth required).
+Synchronous endpoint — accepts a video URL or uploaded file, processes the full pipeline, and returns the complete report in a single JSON response. Useful for API integrations and testing.
 
-**Response:** `200`
+**Request (JSON with video URL):**
+```json
+{
+  "videoUrl": "https://example.com/video.webm",
+  "role": "Software Engineer",
+  "interviewType": "Technical",
+  "question": "Design a URL shortening service."
+}
+```
+
+**Request (multipart with video file):** Same as `POST /api/interview`.
+
+**Response:** `200` — Full report with transcript, scores, evaluation, improved answer, and tips.
+
+**cURL example:**
+```bash
+curl -X POST https://YOUR_BACKEND_URL/api/analyze \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{"videoUrl":"https://example.com/video.webm","role":"Software Engineer","interviewType":"Technical"}'
+```
+
+### `GET /api/config`
+
+Public endpoint (no auth). Returns app configuration.
 
 ```json
-{ "status": "ok", "timestamp": "2026-03-22T..." }
+{ "mockMode": false }
+```
+
+### `GET /health`
+
+Health check (no auth).
+
+```json
+{ "status": "ok", "timestamp": "2026-03-25T..." }
 ```
 
 ## Architecture
@@ -174,13 +206,17 @@ Client polls GET /api/interview/:id for results
 
 ```
 backend/
+  deploy.sh              # One-command deploy to Cloud Run
+  start.sh               # Container entrypoint
+  Dockerfile             # Multi-stage Docker build with FFmpeg
   src/
     config/
-      index.ts          # Central configuration from env vars
-      database.ts       # Firebase Admin SDK initialization
-      ai.ts             # Lazy-initialized AI provider clients
+      index.ts           # Central configuration from env vars
+      database.ts        # Firebase Admin SDK initialization
+      ai.ts              # Lazy-initialized AI provider clients (Gemini/OpenAI/Claude)
     controllers/
-      interview.controller.ts
+      interview.controller.ts  # Interview CRUD + mock mode support
+      analyze.controller.ts    # Synchronous video analysis endpoint
     middleware/
       auth.middleware.ts     # Firebase token verification
       error.middleware.ts    # Global error handler + AppError class
@@ -192,7 +228,8 @@ backend/
     prompts/
       evaluation-prompts.v1.ts   # LLM prompt templates + scoring functions
     routes/
-      interview.routes.ts
+      interview.routes.ts    # Interview routes (conditional multer for mock mode)
+      analyze.routes.ts      # Synchronous analysis route
     services/
       audio.service.ts           # FFmpeg audio extraction
       evaluation.service.ts      # Multi-provider LLM evaluation
@@ -203,8 +240,8 @@ backend/
       logger.ts          # Winston logger
       metrics.ts         # Speech metrics calculator (WPM, fillers, pauses)
     workers/
-      interview.worker.ts  # Background interview processing pipeline
-    app.ts               # Express app setup (middleware, routes, error handlers)
+      interview.worker.ts  # Background processing + mock interview pipeline
+    app.ts               # Express app setup (CORS, middleware, routes)
     server.ts            # Entry point (Firebase init + server start)
 ```
 
@@ -237,6 +274,18 @@ backend/
 ## Mock Mode
 
 Set `MOCK_MODE=true` to bypass all AI API calls. Useful for development and demos. Returns realistic mock data with slight randomization for transcription, evaluation scores, and tips.
+
+## Deployment (Cloud Run)
+
+The backend is deployed to Google Cloud Run (asia-south1) using the included `deploy.sh`:
+
+```bash
+./deploy.sh
+```
+
+This builds the Docker image via Cloud Build, deploys to Cloud Run with appropriate env vars and secrets, and outputs the service URL.
+
+See [DEPLOY.md](../DEPLOY.md) for full setup including GCP secrets, IAM permissions, and CORS configuration.
 
 ## Firestore Collections
 
